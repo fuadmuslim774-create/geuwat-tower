@@ -9,6 +9,7 @@ import { getOrInitProfile } from '../lib/profile';
 import { getOrInitProgress, getRankLabel, getRankStageId } from '../lib/progress';
 import { STAGE_BY_ID } from '../lib/stages';
 import { getStorageKeys } from '../lib/storage';
+import { signOut } from '../lib/auth';
 import type { AvatarId, StageId } from '../types/geuwat';
 
 type SidebarItem = {
@@ -146,8 +147,11 @@ export default function Sidebar() {
         <div className="p-6">
           <button
             type="button"
-            onClick={() => {
+            onClick={async () => {
               if (typeof window !== 'undefined') {
+                // Call signOut to clear session from database
+                await signOut();
+                
                 const keys = getStorageKeys();
                 // Clear profile and settings (user-specific UI state)
                 window.localStorage.removeItem(keys.profile);
@@ -158,7 +162,7 @@ export default function Sidebar() {
                 // It will be synced to database and restored on next login
                 // window.localStorage.removeItem(keys.progress); // REMOVED
                 
-                // Clear auth session
+                // Clear auth session (already done by signOut, but ensure it's cleared)
                 window.localStorage.removeItem('geuwat_user');
                 
                 // Clear session storage (temporary run state)
