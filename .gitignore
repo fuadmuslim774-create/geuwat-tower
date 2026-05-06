@@ -29,3 +29,6 @@ Thumbs.db
 supabase/.temp/
 supabase/config.toml
 supabase/seed.sql
+
+# Kiro specs and configuration
+.kiro/
