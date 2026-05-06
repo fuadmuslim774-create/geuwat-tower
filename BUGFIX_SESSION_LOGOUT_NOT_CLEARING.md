@@ -170,6 +170,7 @@ Test Files  5 passed (5)
 ## Files Modified
 
 - `app/api/session/logout/route.ts` - Fixed logout API to clear all session fields
+- `components/Sidebar.tsx` - Fixed logout button to call signOut API
 
 ## Files Created
 
@@ -177,6 +178,41 @@ Test Files  5 passed (5)
 - `app/api/session/preservation.test.ts` - Preservation property tests
 - `vitest.config.ts` - Vitest configuration
 - `BUGFIX_SESSION_LOGOUT_NOT_CLEARING.md` - This documentation
+
+## Additional Fix: Logout Button Not Calling API
+
+**Problem Found**: Logout button di `components/Sidebar.tsx` hanya clear localStorage tapi **TIDAK memanggil** logout API untuk clear session dari database.
+
+**Solution**: 
+- Import `signOut` dari `lib/auth.ts`
+- Call `await signOut()` sebelum clear localStorage
+- Ini memastikan session di-clear dari database sebelum redirect ke login
+
+**Code Change in `components/Sidebar.tsx`**:
+```typescript
+// Before (Bug)
+onClick={() => {
+  if (typeof window !== 'undefined') {
+    // Only clear localStorage, no API call
+    window.localStorage.removeItem('geuwat_user');
+    // ... other cleanup
+    window.location.href = '/login';
+  }
+}}
+
+// After (Fixed)
+onClick={async () => {
+  if (typeof window !== 'undefined') {
+    // Call signOut to clear session from database
+    await signOut();
+    
+    // Then clear localStorage
+    window.localStorage.removeItem('geuwat_user');
+    // ... other cleanup
+    window.location.href = '/login';
+  }
+}}
+```
 
 ## Migration Required
 
