@@ -1,0 +1,413 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import AppShell from '../../components/AppShell';
+import { getAvatarSrc } from '../../lib/avatars';
+import { getOrInitProfile } from '../../lib/profile';
+import { createInitialProgress, getOrInitProgress } from '../../lib/progress';
+import { STAGE_ORDER, STAGE_BY_ID } from '../../lib/stages';
+import { fetchGlobalRanks } from '../../lib/supabase/leaderboard';
+import type { AvatarId } from '../../types/geuwat';
+
+type RankRow = {
+  id: string;
+  player: string;
+  avatarId: AvatarId;
+  rank: string;
+  time: string;
+  highlight?: boolean;
+};
+
+const TABLE_LINE = '#FF8C00'; // dark orange
+const TABLE_LINE_SHADOW = 'rgba(255,140,0,0.55)';
+
+function normalizeRankKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+const RANK_TO_STAGE_NUMBER: Record<string, number> = Object.fromEntries(
+  STAGE_ORDER.map((id) => [normalizeRankKey(STAGE_BY_ID[id].title), STAGE_BY_ID[id].number]),
+) as Record<string, number>;
+
+const RANK_TO_STAGE_ID: Record<string, (typeof STAGE_ORDER)[number]> = Object.fromEntries(
+  STAGE_ORDER.map((id) => [normalizeRankKey(STAGE_BY_ID[id].title), id]),
+) as Record<string, (typeof STAGE_ORDER)[number]>;
+
+function rankToStageNumber(rank: string): number {
+  const key = normalizeRankKey(rank);
+  return RANK_TO_STAGE_NUMBER[key] ?? 0;
+}
+
+function rankToStageId(rank: string) {
+  const key = normalizeRankKey(rank);
+  return RANK_TO_STAGE_ID[key] ?? null;
+}
+
+function parseTimeToSeconds(time: string): number {
+  const parts = time.split(':').map((p) => Number.parseInt(p, 10));
+  if (parts.length !== 3) return Number.POSITIVE_INFINITY;
+  const [hh, mm, ss] = parts;
+  if ([hh, mm, ss].some((n) => Number.isNaN(n))) return Number.POSITIVE_INFINITY;
+  return hh * 3600 + mm * 60 + ss;
+}
+
+export default function RanksPage() {
+  const [profileId, setProfileId] = useState('');
+  const [username, setUsername] = useState('LEARNER_01');
+  const [avatarId, setAvatarId] = useState<AvatarId>('chibi1');
+  const [progress, setProgress] = useState(() => createInitialProgress());
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  const [rows, setRows] = useState<RankRow[]>([]);
+  const [pageInfo, setPageInfo] = useState<{ page: number; totalPages: number; pageSize: number }>({ page: 1, totalPages: 1, pageSize });
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const profile = getOrInitProfile();
+    setProfileId(profile.profileId);
+    setUsername(profile.username);
+    setAvatarId(profile.avatarId);
+    setProgress(getOrInitProgress());
+
+    const onChange = () => {
+      const nextProfile = getOrInitProfile();
+      const nextProgress = getOrInitProgress();
+      setProfileId(nextProfile.profileId);
+      setUsername(nextProfile.username);
+      setAvatarId(nextProfile.avatarId);
+      setProgress(nextProgress);
+      setPage(1);
+    };
+
+    window.addEventListener('storage', onChange);
+    window.addEventListener('gt_profile_changed', onChange as EventListener);
+    window.addEventListener('gt_progress_changed', onChange as EventListener);
+    const tick = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => {
+      window.removeEventListener('storage', onChange);
+      window.removeEventListener('gt_profile_changed', onChange as EventListener);
+      window.removeEventListener('gt_progress_changed', onChange as EventListener);
+      window.clearInterval(tick);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!profileId) return () => {};
+    setLoading(true);
+    fetchGlobalRanks({ page, pageSize, currentUserId: profileId })
+      .then((res) => {
+        if (cancelled) return;
+        setRows(res.rows as RankRow[]);
+        setPageInfo({ page: res.page, totalPages: res.totalPages, pageSize: res.pageSize });
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRows([]);
+        setPageInfo({ page: 1, totalPages: 1, pageSize });
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [page, pageSize, profileId, avatarId]); // Added avatarId dependency to re-fetch when avatar changes
+
+  // Recalculate time display for current user every second
+  const displayRows = useMemo(() => {
+    return rows.map((row) => {
+      if (row.highlight && row.time !== '--:--:--' && progress.journeyStartedAt && !progress.journeyCompletedAt) {
+        // Current user with in-progress journey - recalculate elapsed time
+        const elapsedMs = nowMs - progress.journeyStartedAt;
+        const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
+        const hh = Math.floor(elapsedSec / 3600);
+        const mm = Math.floor((elapsedSec % 3600) / 60);
+        const ss = elapsedSec % 60;
+        const timeDisplay = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+        return { ...row, time: timeDisplay };
+      }
+      return row;
+    });
+  }, [rows, nowMs, progress.journeyStartedAt, progress.journeyCompletedAt]);
+
+  const offset = (pageInfo.page - 1) * pageInfo.pageSize;
+
+  return (
+    <AppShell>
+      <main className="min-h-screen px-4 sm:px-6 md:px-12 pb-12 relative flex flex-col items-center overflow-auto custom-scrollbar">
+        <div className="relative z-30 pt-16 md:pt-12 flex flex-col items-center pointer-events-none w-full mb-10">
+          <div className="flex items-center gap-4 md:gap-8 px-16 md:px-0">
+            <div className="h-[2px] w-10 md:w-24 bg-gradient-to-r from-transparent via-neon-cyan/50 to-neon-cyan shadow-[0_0_10px_rgba(0,240,255,0.4)]" />
+            <h1 className="font-headline text-[22px] sm:text-4xl md:text-6xl font-black text-neon-cyan uppercase tracking-[0.18em] sm:tracking-[0.22em] md:tracking-[0.4em] drop-shadow-[0_0_20px_rgba(0,240,255,0.8)] leading-none whitespace-nowrap">
+              GEUWAT TOWER
+            </h1>
+            <div className="h-[2px] w-10 md:w-24 bg-gradient-to-l from-transparent via-neon-cyan/50 to-neon-cyan shadow-[0_0_10px_rgba(0,240,255,0.4)]" />
+          </div>
+          <div className="mt-4 px-6 md:px-12 py-1 bg-neon-amber/5 border-x border-neon-amber/20">
+            <p className="text-[10px] md:text-[11px] font-black font-headline tracking-[0.45em] md:tracking-[0.8em] uppercase text-neon-amber drop-shadow-[0_0_10px_rgba(255,191,0,0.7)] text-center">
+              BE THE KING TO DOMINATE THE WORLD
+            </p>
+          </div>
+          <div className="mt-2 px-6 md:px-12 py-1">
+            <p className="text-[15px] md:text-[17px] font-black font-headline tracking-[0.4em] md:tracking-[0.6em] uppercase text-neon-yellow light bg-red-900 drop-shadow-[0_0_8px_rgba(0,240,255,0.5)] text-center">
+              GLOBAL RANKS
+            </p>
+          </div>
+        </div>
+
+        <section className="w-full max-w-4xl">
+          {/* Your Position Section */}
+          {rows.some(r => r.highlight) && (
+            <div className="mb-6 p-4 bg-surface-container/60 backdrop-blur-md border border-neon-cyan/30 rounded-lg">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 gt-hex flex items-center justify-center border border-neon-cyan/50 overflow-hidden">
+                    <img
+                      alt="Your avatar"
+                      src={getAvatarSrc(rows.find(r => r.highlight)?.avatarId || avatarId)}
+                      className="w-full h-full object-cover scale-110"
+                      style={{ objectPosition: '50% 25%' }}
+                    />
+                  </div>
+                  <div>
+                    <p className="font-headline text-xs text-white/60 uppercase tracking-wider">Your Position</p>
+                    <p className="font-headline text-2xl font-black text-neon-cyan tracking-wide">
+                      #{rows.findIndex(r => r.highlight) + 1 + offset}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-6">
+                  <div>
+                    <p className="font-headline text-xs text-white/60 uppercase tracking-wider">Rank</p>
+                    <p className="font-headline text-lg font-black text-neon-amber">
+                      {rows.find(r => r.highlight)?.rank || '--'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="font-headline text-xs text-white/60 uppercase tracking-wider">Time</p>
+                    <p className="font-headline text-lg font-black text-neon-pink">
+                      {displayRows.find(r => r.highlight)?.time || '--:--:--'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          <div className="overflow-x-auto custom-scrollbar">
+            <div className="min-w-[640px] sm:min-w-[720px]">
+              <div
+                className="p-[2px] rounded-lg border-2 bg-black/50 shadow-[0_0_15px_rgba(255,140,0,0.35),inset_0_0_15px_rgba(255,140,0,0.18)]"
+                style={{ borderColor: TABLE_LINE }}
+              >
+                <div
+                  className="grid grid-cols-[52px_2fr_2fr_2fr] sm:grid-cols-[60px_2fr_2fr_2fr] gap-px font-headline text-neon-cyan text-[13px] sm:text-[15px] font-medium tracking-wide"
+                  style={{ backgroundColor: TABLE_LINE }}
+                >
+                  {['No', 'Player', 'Rank', 'Completion Time'].map((label, idx) => (
+                    <div
+                      key={label}
+                      className={`bg-[#0a1114] p-3 text-center ${idx === 0 ? 'rounded-tl-sm' : ''} ${idx === 3 ? 'rounded-tr-sm' : ''}`}
+                    >
+                      {label}
+                    </div>
+                  ))}
+                </div>
+
+                <div
+                  className="grid grid-cols-[52px_2fr_2fr_2fr] sm:grid-cols-[60px_2fr_2fr_2fr] gap-px font-headline text-[13px] sm:text-[15px] tracking-wide mt-px rounded-b-sm overflow-hidden"
+                  style={{ backgroundColor: TABLE_LINE }}
+                >
+                  {loading ? (
+                    <div className="col-span-4 bg-[#0a1114] p-6 text-center text-white/60">Loading ranks…</div>
+                  ) : rows.length === 0 ? (
+                    <div className="col-span-4 bg-[#0a1114] p-6 text-center text-white/60">No ranks yet.</div>
+                  ) : (
+                    displayRows.map((row, idx) => {
+                    const isYou = Boolean(row.highlight);
+                    const cyan = '#00F0FF';
+                    const pink = '#FF51FA';
+                    const gold = '#FF9900';
+                    const blue = '#4169E1';
+                    const red = '#FF0000';
+                    const yellow = '#FFFF00';
+                    const orange = '#FF8C00';
+                    const green = '#00FF00';
+                    const purple = '#800080';
+                    const white = '#FFFFFF';
+                    
+                    // Color scheme based on global rank position (across pagination)
+                    const position = offset + idx + 1;
+                    let fg: string;
+                    let hasEffect = false;
+                    
+                    if (position === 1) {
+                      fg = gold;
+                      hasEffect = true;
+                    } else if (position === 2) {
+                      fg = gold;
+                    } else if (position === 3) {
+                      fg = blue;
+                    } else if (position === 4) {
+                      fg = red;
+                    } else if (position === 5) {
+                      fg = yellow;
+                    } else if (position === 6) {
+                      fg = orange;
+                    } else if (position === 7) {
+                      fg = green;
+                    } else if (position === 8) {
+                      fg = purple;
+                    } else if (position === 9) {
+                      fg = pink;
+                    } else if (position === 10) {
+                      fg = cyan;
+                    } else {
+                      fg = white;
+                    }
+                    
+                    // Override with pink if it's the current user
+                    if (isYou) {
+                      fg = pink;
+                    }
+                    
+                    const box = isYou ? 'shadow-[inset_0_0_15px_rgba(255,81,250,0.3)] border border-[rgba(255,81,250,0.5)]' : '';
+                    const stageId = rankToStageId(row.rank);
+                    const stage = stageId ? STAGE_BY_ID[stageId] : null;
+                    const rankColor = stage?.accentColor ?? (row.rank === 'Royal King' ? gold : fg);
+                    const hudLineShadow = TABLE_LINE_SHADOW;
+                    const isTopRank = idx === 0;
+                    const isGreatestKing = isTopRank && row.rank === 'Royal King';
+                    const displayRank = isGreatestKing ? 'THE GREATEST KING' : row.rank;
+                      return (
+                      <div key={row.id} className="contents">
+                        <div
+                          className={`bg-[#0a1114] p-2 text-center flex items-center justify-center relative overflow-hidden min-w-0 ${box}`}
+                          style={{ 
+                            color: fg,
+                            filter: hasEffect ? 'drop-shadow(0 0 22px rgba(255,191,0,0.95))' : undefined
+                          }}
+                        >
+                          <div
+                            className="absolute left-0 right-0 top-0 h-[2px]"
+                            style={{ backgroundColor: TABLE_LINE, boxShadow: `0 0 10px ${hudLineShadow}` }}
+                            aria-hidden="true"
+                          />
+                          {position}
+                        </div>
+                    <div
+                      className={`bg-[#0a1114] p-2 text-center flex items-center justify-center relative overflow-hidden min-w-0 ${box}`}
+                      style={{ 
+                        color: fg,
+                        filter: hasEffect ? 'drop-shadow(0 0 22px rgba(255,191,0,0.95))' : undefined
+                      }}
+                    >
+                      <div
+                        className="absolute left-0 right-0 top-0 h-[2px]"
+                        style={{ backgroundColor: TABLE_LINE, boxShadow: `0 0 10px ${hudLineShadow}` }}
+                        aria-hidden="true"
+                      />
+                      <div className="grid grid-cols-[36px_1fr] items-center gap-2 w-full max-w-[240px] min-w-0">
+                        <div
+                          className="w-9 h-9 gt-hex overflow-hidden border bg-black/40"
+                          style={{ borderColor: isYou ? 'rgba(255,81,250,0.5)' : 'rgba(0,240,255,0.28)' }}
+                          aria-hidden="true"
+                        >
+                          <img
+                            alt=""
+                            src={getAvatarSrc(row.avatarId)}
+                            className="w-full h-full object-cover scale-110"
+                            style={{ objectPosition: '50% 20%' }}
+                          />
+                        </div>
+                        <span className="truncate text-left min-w-0">{row.player}</span>
+                      </div>
+                    </div>
+                        <div
+                          className={`bg-[#0a1114] p-2 text-center flex items-center justify-center relative overflow-hidden min-w-0 ${box}`}
+                          style={{
+                            color: rankColor,
+                            filter: hasEffect 
+                              ? 'drop-shadow(0 0 22px rgba(255,191,0,0.95))' 
+                              : `drop-shadow(0 0 6px ${stage?.glow ?? (row.rank === 'Royal King' ? '#FF9900' : fg)})`,
+                          }}
+                        >
+                          <div
+                            className="absolute left-0 top-0 bottom-0 w-[2px]"
+                            style={{
+                              backgroundColor: TABLE_LINE,
+                              boxShadow: `0 0 10px ${TABLE_LINE_SHADOW}`,
+                            }}
+                            aria-hidden="true"
+                          />
+                          <div
+                            className="absolute left-0 right-0 top-0 h-[2px]"
+                            style={{
+                              backgroundColor: TABLE_LINE,
+                              boxShadow: `0 0 10px ${TABLE_LINE_SHADOW}`,
+                            }}
+                            aria-hidden="true"
+                          />
+                          {isGreatestKing ? (
+                            <span className="gt-greatest-king inline-flex items-center justify-center w-full relative min-w-0">
+                              <img
+                                src="/ui/the-greatest-king-rb-converted.png"
+                                alt="THE GREATEST KING"
+                                className="h-[28px] sm:h-[30px] md:h-[32px] w-auto max-w-full select-none pointer-events-none drop-shadow-[0_0_22px_rgba(255,191,0,0.95)] scale-[1.9] translate-y-[7px]"
+                                draggable={false}
+                              />
+                            </span>
+                          ) : (
+                            displayRank
+                          )}
+                        </div>
+                        <div
+                          className={`bg-[#0a1114] p-2 text-center flex items-center justify-center relative overflow-hidden min-w-0 ${box}`}
+                          style={{ 
+                            color: fg,
+                            filter: hasEffect ? 'drop-shadow(0 0 22px rgba(255,191,0,0.95))' : undefined
+                          }}
+                        >
+                          <div
+                            className="absolute left-0 right-0 top-0 h-[2px]"
+                            style={{ backgroundColor: TABLE_LINE, boxShadow: `0 0 10px ${hudLineShadow}` }}
+                            aria-hidden="true"
+                          />
+                          {row.time}
+                        </div>
+                      </div>
+                    );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-center items-center mt-8 gap-3 font-headline text-[15px] text-neon-cyan">
+            <button
+              type="button"
+              className="hover:text-white transition-colors disabled:opacity-40 disabled:hover:text-neon-cyan"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={pageInfo.page <= 1}
+            >
+              &lt; Prev
+            </button>
+            <span className="text-neon-amber font-bold">
+              {pageInfo.page} / {pageInfo.totalPages}
+            </span>
+            <button
+              type="button"
+              className="hover:text-white transition-colors disabled:opacity-40 disabled:hover:text-neon-cyan"
+              onClick={() => setPage((p) => Math.min(pageInfo.totalPages, p + 1))}
+              disabled={pageInfo.page >= pageInfo.totalPages}
+            >
+              Next &gt;
+            </button>
+          </div>
+        </section>
+      </main>
+    </AppShell>
+  );
+}

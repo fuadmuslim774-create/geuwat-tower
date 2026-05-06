@@ -1,0 +1,430 @@
+import type { JourneyProgress, StageId, StageProgress } from '../types/geuwat';
+import { STAGE_BY_ID, STAGE_ORDER, getNextStageId } from './stages';
+import { readProgress, writeProgress } from './storage';
+import { getCurrentUser } from './auth';
+
+function createEmptyStageProgress(isUnlocked: boolean): StageProgress {
+  return {
+    unlocked: isUnlocked,
+    completed: false,
+    bestPercentage: 0,
+    lastPercentage: 0,
+    bestTimeSeconds: null,
+    lastTimeSeconds: null,
+    attempts: 0,
+    lastPlayedAt: null,
+  };
+}
+
+export function createInitialProgress(): JourneyProgress {
+  const stages = Object.fromEntries(
+    STAGE_ORDER.map((id, idx) => [id, createEmptyStageProgress(idx === 0)]),
+  ) as Record<StageId, StageProgress>;
+  return { journeyStartedAt: null, journeyCompletedAt: null, stages };
+}
+
+export function getOrInitProgress(): JourneyProgress {
+  if (typeof window === 'undefined') return createInitialProgress();
+  const existing = readProgress();
+  if (!existing) {
+    // Try to restore from database first
+    const user = getCurrentUser();
+    if (user) {
+      console.log('[getOrInitProgress] Local storage empty, attempting to restore from database');
+      // This is async, so we'll return initial progress for now
+      // and trigger a restore in the background
+      restoreProgressFromDatabase().then((restored) => {
+        if (restored) {
+          console.log('[getOrInitProgress] Progress restored from database, triggering update');
+          window.dispatchEvent(new Event('gt_progress_changed'));
+        }
+      });
+    }
+    
+    const fresh = { ...createInitialProgress(), journeyStartedAt: Date.now() };
+    writeProgress(fresh);
+    // Sync initial journey start to database
+    syncInitialJourneyStart(fresh);
+    return fresh;
+  }
+
+  // Backfill only when needed (prevents event loops and unnecessary writes).
+  const base = createInitialProgress();
+  let didChange = false;
+  const nextStages: Record<StageId, StageProgress> = { ...base.stages };
+
+  const prevStartedAt = typeof (existing as any).journeyStartedAt === 'number' ? (existing as any).journeyStartedAt : null;
+  const prevCompletedAt = typeof (existing as any).journeyCompletedAt === 'number' ? (existing as any).journeyCompletedAt : null;
+
+  for (const id of STAGE_ORDER) {
+    const prev = existing.stages[id];
+    if (!prev) {
+      didChange = true;
+      continue;
+    }
+
+    const mergedStage: StageProgress = { ...base.stages[id], ...prev };
+    for (const k of Object.keys(base.stages[id]) as Array<keyof StageProgress>) {
+      if (prev[k] === undefined) didChange = true;
+    }
+    nextStages[id] = mergedStage;
+  }
+
+  // Infer missing journeyStartedAt/journeyCompletedAt for older stored progress.
+  const playedTimes = STAGE_ORDER.map((id) => nextStages[id]?.lastPlayedAt).filter((t): t is number => typeof t === 'number');
+  const inferredStartedAt = playedTimes.length > 0 ? Math.min(...playedTimes) : Date.now();
+  const inferredCompletedAt = playedTimes.length > 0 ? Math.max(...playedTimes) : Date.now();
+
+  const journeyStartedAt = prevStartedAt ?? inferredStartedAt;
+  let journeyCompletedAt = prevCompletedAt;
+  const isCompleteNow = STAGE_ORDER.every((id) => nextStages[id]?.completed);
+  if (journeyCompletedAt === null && isCompleteNow) {
+    journeyCompletedAt = inferredCompletedAt;
+  }
+
+  if (prevStartedAt === null) {
+    didChange = true;
+    // Sync initial journey start to database if it was just inferred
+    const merged: JourneyProgress = { journeyStartedAt, journeyCompletedAt, stages: nextStages };
+    syncInitialJourneyStart(merged);
+  }
+  if (prevCompletedAt === null && isCompleteNow) didChange = true;
+
+  if (!didChange) return existing as JourneyProgress;
+
+  const merged: JourneyProgress = { journeyStartedAt, journeyCompletedAt, stages: nextStages };
+  writeProgress(merged);
+  return merged;
+}
+
+export function getCompletionTimeSeconds(progress: JourneyProgress, stageId: StageId): number | null {
+  const idx = STAGE_ORDER.indexOf(stageId);
+  if (idx < 0) return null;
+  let total = 0;
+  let hasAny = false;
+  for (let i = 0; i <= idx; i += 1) {
+    const id = STAGE_ORDER[i];
+    const sp = progress.stages[id];
+    if (!sp?.completed) break;
+    if (typeof sp.bestTimeSeconds === 'number') {
+      total += sp.bestTimeSeconds;
+      hasAny = true;
+    }
+  }
+  return hasAny ? total : null;
+}
+
+export function computeOverallCompletion(progress: JourneyProgress): number {
+  const total = STAGE_ORDER.length;
+  const completed = STAGE_ORDER.filter((id) => progress.stages[id]?.completed).length;
+  return total === 0 ? 0 : Math.round((completed / total) * 100);
+}
+
+export function isJourneyComplete(progress: JourneyProgress): boolean {
+  return STAGE_ORDER.every((id) => progress.stages[id]?.completed);
+}
+
+export function getRankLabel(progress: JourneyProgress): string {
+  // Rank label follows the highest-cleared stage name (no CADET/ROOKIE tiers).
+  const stageId = getRankStageId(progress);
+  return STAGE_BY_ID[stageId].title;
+}
+
+export function getRankStageId(progress: JourneyProgress): StageId {
+  const lastCompleted = [...STAGE_ORDER].reverse().find((id) => progress.stages[id]?.completed);
+  return lastCompleted ?? 'alphabet';
+}
+
+export function updateOnGameOver(stageId: StageId, percentage: number, durationSeconds: number) {
+  const progress = getOrInitProgress();
+  const stage = progress.stages[stageId];
+  const now = Date.now();
+  const nextStage: StageProgress = {
+    ...stage,
+    attempts: stage.attempts + 1,
+    lastPercentage: percentage,
+    bestPercentage: Math.max(stage.bestPercentage, percentage),
+    lastTimeSeconds: durationSeconds,
+    bestTimeSeconds:
+      percentage > stage.bestPercentage
+        ? durationSeconds
+        : percentage === stage.bestPercentage
+          ? stage.bestTimeSeconds === null
+            ? durationSeconds
+            : Math.min(stage.bestTimeSeconds, durationSeconds)
+          : stage.bestTimeSeconds,
+    lastPlayedAt: now,
+  };
+  const next: JourneyProgress = {
+    ...progress,
+    stages: { ...progress.stages, [stageId]: nextStage },
+  };
+  writeProgress(next);
+  window.dispatchEvent(new Event('gt_progress_changed'));
+  
+  // Sync full progress to database (even for incomplete attempts)
+  syncFullProgress(next);
+}
+
+export function updateOnStageComplete(stageId: StageId, durationSeconds: number) {
+  const progress = getOrInitProgress();
+  const stage = progress.stages[stageId];
+  const now = Date.now();
+
+  const nextStage: StageProgress = {
+    ...stage,
+    unlocked: true,
+    completed: true,
+    attempts: stage.attempts + 1,
+    lastPercentage: 100,
+    bestPercentage: 100,
+    lastTimeSeconds: durationSeconds,
+    bestTimeSeconds: stage.bestTimeSeconds === null ? durationSeconds : Math.min(stage.bestTimeSeconds, durationSeconds),
+    lastPlayedAt: now,
+  };
+
+  let nextStages: Record<StageId, StageProgress> = { ...progress.stages, [stageId]: nextStage };
+
+  const nextId = getNextStageId(stageId);
+  if (nextId) {
+    const nextStageProgress = nextStages[nextId];
+    nextStages = {
+      ...nextStages,
+      [nextId]: { ...nextStageProgress, unlocked: true },
+    };
+  }
+
+  const nextProgress: JourneyProgress = {
+    ...progress,
+    stages: nextStages,
+  };
+  if (nextProgress.journeyStartedAt === null) nextProgress.journeyStartedAt = now;
+  if (isJourneyComplete(nextProgress) && nextProgress.journeyCompletedAt === null) {
+    nextProgress.journeyCompletedAt = now;
+  }
+
+  writeProgress(nextProgress);
+  window.dispatchEvent(new Event('gt_progress_changed'));
+
+  // Sync leaderboard entry to database
+  syncLeaderboardEntry(nextProgress);
+  
+  // Sync full progress to database
+  syncFullProgress(nextProgress);
+}
+
+async function syncLeaderboardEntry(progress: JourneyProgress) {
+  try {
+    // Get current user profile
+    const user = getCurrentUser();
+    if (!user) {
+      console.warn('[syncLeaderboardEntry] No user session found, skipping sync');
+      return;
+    }
+
+    // Calculate completion time in seconds
+    const timeSec = getJourneyCompletionTimeSeconds(progress, Date.now());
+
+    // Get highest completed stage
+    const rankStageId = getRankStageId(progress);
+
+    // Construct payload with journey timestamps
+    const payload = {
+      userId: user.id,
+      rankStageId,
+      timeSec,
+      journeyStartedAt: progress.journeyStartedAt,
+      journeyCompletedAt: progress.journeyCompletedAt,
+    };
+
+    // Make POST request to sync endpoint
+    const response = await fetch('/api/leaderboard/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error('[syncLeaderboardEntry] API call failed:', {
+        status: response.status,
+        error: errorData,
+      });
+      return;
+    }
+
+    const result = await response.json();
+    console.log('[syncLeaderboardEntry] Sync successful:', result);
+  } catch (error) {
+    // Log error but don't block user flow
+    console.error('[syncLeaderboardEntry] Unexpected error during sync:', error);
+  }
+}
+
+/**
+ * Sync initial journey start timestamp to database
+ * Called when user first logs in or when journeyStartedAt is first set
+ */
+async function syncInitialJourneyStart(progress: JourneyProgress) {
+  try {
+    // Get current user profile
+    const user = getCurrentUser();
+    if (!user) {
+      console.warn('[syncInitialJourneyStart] No user session found, skipping sync');
+      return;
+    }
+
+    // Only sync if journeyStartedAt exists
+    if (!progress.journeyStartedAt) {
+      return;
+    }
+
+    // Get highest completed stage (or 'alphabet' if none completed)
+    const rankStageId = getRankStageId(progress);
+
+    // Calculate completion time in seconds (will be null if not completed)
+    const timeSec = getJourneyCompletionTimeSeconds(progress, Date.now());
+
+    // Construct payload with journey timestamps
+    const payload = {
+      userId: user.id,
+      rankStageId,
+      timeSec,
+      journeyStartedAt: progress.journeyStartedAt,
+      journeyCompletedAt: progress.journeyCompletedAt,
+    };
+
+    console.log('[syncInitialJourneyStart] Syncing initial journey start to database:', payload);
+
+    // Make POST request to sync endpoint
+    const response = await fetch('/api/leaderboard/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error('[syncInitialJourneyStart] API call failed:', {
+        status: response.status,
+        error: errorData,
+      });
+      return;
+    }
+
+    const result = await response.json();
+    console.log('[syncInitialJourneyStart] Initial sync successful:', result);
+  } catch (error) {
+    // Log error but don't block user flow
+    console.error('[syncInitialJourneyStart] Unexpected error during sync:', error);
+  }
+}
+
+/**
+ * Sync full progress to database
+ * This ensures all stage progress is persisted, not just leaderboard entry
+ */
+async function syncFullProgress(progress: JourneyProgress) {
+  try {
+    // Get current user profile
+    const user = getCurrentUser();
+    if (!user) {
+      console.warn('[syncFullProgress] No user session found, skipping sync');
+      return;
+    }
+
+    // Construct payload
+    const payload = {
+      userId: user.id,
+      progress,
+    };
+
+    console.log('[syncFullProgress] Syncing full progress to database');
+
+    // Make POST request to sync endpoint
+    const response = await fetch('/api/progress/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error('[syncFullProgress] API call failed:', {
+        status: response.status,
+        error: errorData,
+      });
+      return;
+    }
+
+    const result = await response.json();
+    console.log('[syncFullProgress] Full progress sync successful:', result);
+  } catch (error) {
+    // Log error but don't block user flow
+    console.error('[syncFullProgress] Unexpected error during sync:', error);
+  }
+}
+
+export function canPlayStage(stageId: StageId, progress: JourneyProgress): boolean {
+  return Boolean(progress.stages[stageId]?.unlocked);
+}
+
+export function getJourneyCompletionTimeSeconds(progress: JourneyProgress, nowMs: number): number | null {
+  if (progress.journeyStartedAt === null) return null;
+  const end = progress.journeyCompletedAt ?? nowMs;
+  const diff = Math.max(0, Math.floor((end - progress.journeyStartedAt) / 1000));
+  return diff;
+}
+
+/**
+ * Restore progress from database
+ * Called on login to restore progress if local storage is empty
+ */
+export async function restoreProgressFromDatabase(): Promise<JourneyProgress | null> {
+  try {
+    const user = getCurrentUser();
+    if (!user) {
+      console.warn('[restoreProgressFromDatabase] No user session found');
+      return null;
+    }
+
+    console.log('[restoreProgressFromDatabase] Fetching progress from database');
+
+    const response = await fetch(`/api/progress/sync?userId=${user.id}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error('[restoreProgressFromDatabase] API call failed:', {
+        status: response.status,
+        error: errorData,
+      });
+      return null;
+    }
+
+    const result = await response.json();
+    
+    if (result.success && result.progress) {
+      console.log('[restoreProgressFromDatabase] Progress restored from database');
+      // Write to local storage
+      writeProgress(result.progress);
+      return result.progress;
+    }
+
+    console.log('[restoreProgressFromDatabase] No progress found in database');
+    return null;
+  } catch (error) {
+    console.error('[restoreProgressFromDatabase] Unexpected error:', error);
+    return null;
+  }
+}
