@@ -37,7 +37,13 @@ export function startSessionMonitor() {
 
       if (!response.ok || !data.sessionValid) {
         console.error('[SessionMonitor] Session invalid:', data);
-        handleSessionInvalid();
+        
+        // Check if session expired (24 hours)
+        if (data.code === 'SESSION_EXPIRED') {
+          handleSessionExpired();
+        } else {
+          handleSessionInvalid();
+        }
       } else {
         console.log('[SessionMonitor] Session valid, heartbeat sent');
       }
@@ -84,7 +90,13 @@ async function sendHeartbeat() {
 
     if (!response.ok || !data.sessionValid) {
       console.error('[SessionMonitor] Session invalid on initial heartbeat:', data);
-      handleSessionInvalid();
+      
+      // Check if session expired (24 hours)
+      if (data.code === 'SESSION_EXPIRED') {
+        handleSessionExpired();
+      } else {
+        handleSessionInvalid();
+      }
     }
   } catch (error) {
     console.error('[SessionMonitor] Initial heartbeat failed:', error);
@@ -104,6 +116,25 @@ function handleSessionInvalid() {
     
     // Show alert
     alert('Akun Anda sedang digunakan di perangkat lain. Anda akan diarahkan ke halaman login.');
+    
+    // Redirect to login
+    window.location.href = '/login';
+  }
+}
+
+/**
+ * Handle expired session (24 hours) - show alert and redirect to login
+ */
+function handleSessionExpired() {
+  stopSessionMonitor();
+  
+  // Clear local storage
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('geuwat_user');
+    localStorage.removeItem('geuwat_profile');
+    
+    // Show alert
+    alert('Sesi Anda telah kadaluarsa (24 jam). Silakan login kembali.');
     
     // Redirect to login
     window.location.href = '/login';

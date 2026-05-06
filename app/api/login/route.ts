@@ -68,26 +68,47 @@ export async function POST(req: Request) {
   // Check if account is already active in another session
   const { data: existingProfile } = await supabase
     .from('profiles')
-    .select('id, username, avatar_id, batch_id, active_session_token, last_activity_at')
+    .select('id, username, avatar_id, batch_id, active_session_token, session_started_at, last_activity_at')
     .eq('id', cred.account_id)
     .maybeSingle();
 
-  // Check if there's an active session (within last 5 minutes)
-  if (existingProfile?.active_session_token && existingProfile?.last_activity_at) {
-    const lastActivity = new Date(existingProfile.last_activity_at).getTime();
+  // Check if session has expired (24 hours from session_started_at)
+  if (existingProfile?.active_session_token && existingProfile?.session_started_at) {
+    const sessionStarted = new Date(existingProfile.session_started_at).getTime();
     const now = Date.now();
-    const fiveMinutes = 5 * 60 * 1000;
+    const twentyFourHours = 24 * 60 * 60 * 1000;
     
-    if (now - lastActivity < fiveMinutes) {
-      // Account is currently active in another session
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Akun sedang digunakan di perangkat lain. Silakan coba akun yang lain atau tunggu beberapa saat.',
-          code: 'ACCOUNT_IN_USE'
-        }, 
-        { status: 409 }
-      );
+    if (now - sessionStarted >= twentyFourHours) {
+      // Session expired (24 hours), auto-clear it
+      console.log('[login] Session expired (24 hours), clearing session for user:', cred.account_id);
+      await supabase
+        .from('profiles')
+        .update({
+          active_session_token: null,
+          session_started_at: null,
+          last_activity_at: null,
+        })
+        .eq('id', cred.account_id);
+      
+      // Continue with login (session cleared)
+    } else {
+      // Session not expired yet, check if it's still active (within last 5 minutes)
+      if (existingProfile?.last_activity_at) {
+        const lastActivity = new Date(existingProfile.last_activity_at).getTime();
+        const fiveMinutes = 5 * 60 * 1000;
+        
+        if (now - lastActivity < fiveMinutes) {
+          // Account is currently active in another session
+          return NextResponse.json(
+            { 
+              success: false, 
+              error: 'Akun sedang digunakan di perangkat lain. Silakan coba akun yang lain atau tunggu beberapa saat.',
+              code: 'ACCOUNT_IN_USE'
+            }, 
+            { status: 409 }
+          );
+        }
+      }
     }
   }
 
