@@ -27,24 +27,10 @@ export function getOrInitProgress(): JourneyProgress {
   if (typeof window === 'undefined') return createInitialProgress();
   const existing = readProgress();
   if (!existing) {
-    // Try to restore from database first
-    const user = getCurrentUser();
-    if (user) {
-      console.log('[getOrInitProgress] Local storage empty, attempting to restore from database');
-      // This is async, so we'll return initial progress for now
-      // and trigger a restore in the background
-      restoreProgressFromDatabase().then((restored) => {
-        if (restored) {
-          console.log('[getOrInitProgress] Progress restored from database, triggering update');
-          window.dispatchEvent(new Event('gt_progress_changed'));
-        }
-      });
-    }
-    
-    const fresh = { ...createInitialProgress(), journeyStartedAt: Date.now() };
+    // Return initial progress WITHOUT journeyStartedAt
+    // Let the restore process or first stage play set it
+    const fresh = createInitialProgress();
     writeProgress(fresh);
-    // Sync initial journey start to database
-    syncInitialJourneyStart(fresh);
     return fresh;
   }
 
@@ -72,21 +58,18 @@ export function getOrInitProgress(): JourneyProgress {
 
   // Infer missing journeyStartedAt/journeyCompletedAt for older stored progress.
   const playedTimes = STAGE_ORDER.map((id) => nextStages[id]?.lastPlayedAt).filter((t): t is number => typeof t === 'number');
-  const inferredStartedAt = playedTimes.length > 0 ? Math.min(...playedTimes) : Date.now();
-  const inferredCompletedAt = playedTimes.length > 0 ? Math.max(...playedTimes) : Date.now();
+  const inferredStartedAt = playedTimes.length > 0 ? Math.min(...playedTimes) : null; // Changed: Don't use Date.now()
+  const inferredCompletedAt = playedTimes.length > 0 ? Math.max(...playedTimes) : null; // Changed: Don't use Date.now()
 
   const journeyStartedAt = prevStartedAt ?? inferredStartedAt;
   let journeyCompletedAt = prevCompletedAt;
   const isCompleteNow = STAGE_ORDER.every((id) => nextStages[id]?.completed);
-  if (journeyCompletedAt === null && isCompleteNow) {
+  if (journeyCompletedAt === null && isCompleteNow && inferredCompletedAt !== null) {
     journeyCompletedAt = inferredCompletedAt;
   }
 
-  if (prevStartedAt === null) {
+  if (prevStartedAt === null && inferredStartedAt !== null) {
     didChange = true;
-    // Sync initial journey start to database if it was just inferred
-    const merged: JourneyProgress = { journeyStartedAt, journeyCompletedAt, stages: nextStages };
-    syncInitialJourneyStart(merged);
   }
   if (prevCompletedAt === null && isCompleteNow) didChange = true;
 
@@ -198,7 +181,13 @@ export function updateOnStageComplete(stageId: StageId, durationSeconds: number)
     ...progress,
     stages: nextStages,
   };
-  if (nextProgress.journeyStartedAt === null) nextProgress.journeyStartedAt = now;
+  
+  // Set journeyStartedAt ONLY if it's null (first stage completion)
+  if (nextProgress.journeyStartedAt === null) {
+    nextProgress.journeyStartedAt = now;
+    console.log('[updateOnStageComplete] Setting journeyStartedAt for first time:', now);
+  }
+  
   if (isJourneyComplete(nextProgress) && nextProgress.journeyCompletedAt === null) {
     nextProgress.journeyCompletedAt = now;
   }
