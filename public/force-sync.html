@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Force Sync Journey Timestamps</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      margin-top: 0;
+    }
+    button {
+      background: #0070f3;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-top: 20px;
+    }
+    button:hover {
+      background: #0051cc;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .log {
+      background: #f8f8f8;
+      border: 1px solid #ddd;
+      padding: 15px;
+      border-radius: 4px;
+      margin-top: 20px;
+      font-family: monospace;
+      font-size: 14px;
+      white-space: pre-wrap;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .success {
+      color: #0070f3;
+      font-weight: bold;
+    }
+    .error {
+      color: #e00;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔄 Force Sync Journey Timestamps</h1>
+    <p>This tool will sync your journey_started_at from local storage to the database.</p>
+    <p><strong>Use this if:</strong></p>
+    <ul>
+      <li>You're logged in but not appearing in leaderboard rankings</li>
+      <li>Your rank is lower than expected</li>
+      <li>You've completed stages but timer shows "--:--:--"</li>
+    </ul>
+    
+    <button id="syncBtn" onclick="forceSyncJourneyTimestamps()">
+      🚀 Force Sync Now
+    </button>
+    
+    <div id="log" class="log" style="display: none;"></div>
+  </div>
+
+  <script>
+    function log(message, type = 'info') {
+      const logEl = document.getElementById('log');
+      logEl.style.display = 'block';
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'success' ? 'success' : type === 'error' ? 'error' : '';
+      logEl.innerHTML += `<div class="${className}">[${timestamp}] ${message}</div>`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    async function forceSyncJourneyTimestamps() {
+      const btn = document.getElementById('syncBtn');
+      btn.disabled = true;
+      btn.textContent = '⏳ Syncing...';
+      
+      document.getElementById('log').innerHTML = '';
+      
+      try {
+        // Get progress from local storage
+        const progressStr = localStorage.getItem('gt_progress_v1');
+        if (!progressStr) {
+          log('❌ No progress found in local storage', 'error');
+          log('💡 Try logging in first', 'info');
+          btn.disabled = false;
+          btn.textContent = '🚀 Force Sync Now';
+          return;
+        }
+
+        const progress = JSON.parse(progressStr);
+        log('📊 Progress loaded from local storage', 'success');
+
+        // Get user from local storage
+        const userStr = localStorage.getItem('geuwat_user');
+        if (!userStr) {
+          log('❌ No user found in local storage', 'error');
+          log('💡 Try logging in first', 'info');
+          btn.disabled = false;
+          btn.textContent = '🚀 Force Sync Now';
+          return;
+        }
+
+        const user = JSON.parse(userStr);
+        log(`👤 User: ${user.username} (${user.id})`, 'success');
+
+        // Initialize journey_started_at if not set
+        if (!progress.journeyStartedAt) {
+          log('⚠️  No journeyStartedAt found, initializing to now', 'info');
+          progress.journeyStartedAt = Date.now();
+          localStorage.setItem('gt_progress_v1', JSON.stringify(progress));
+          log('✅ journeyStartedAt initialized', 'success');
+        } else {
+          const startDate = new Date(progress.journeyStartedAt);
+          log(`📅 journeyStartedAt: ${startDate.toLocaleString()}`, 'info');
+        }
+
+        // Calculate highest completed stage
+        const stageOrder = [
+          'alphabet',
+          'lax_vowel',
+          'tense_vowel',
+          'diphthong',
+          'voiceless',
+          'voiced',
+          'final_s_es',
+          'final_d_ed',
+          'royal_king',
+        ];
+
+        let rankStageId = 'alphabet';
+        for (const stageId of [...stageOrder].reverse()) {
+          if (progress.stages[stageId]?.completed) {
+            rankStageId = stageId;
+            break;
+          }
+        }
+        log(`🎯 Highest completed stage: ${rankStageId}`, 'info');
+
+        // Calculate time_sec
+        let timeSec = null;
+        if (progress.journeyCompletedAt) {
+          timeSec = Math.floor((progress.journeyCompletedAt - progress.journeyStartedAt) / 1000);
+          log(`⏱️  Journey completed in ${timeSec} seconds`, 'info');
+        } else {
+          timeSec = Math.floor((Date.now() - progress.journeyStartedAt) / 1000);
+          log(`⏱️  Current elapsed time: ${timeSec} seconds`, 'info');
+        }
+
+        // Prepare payload
+        const payload = {
+          userId: user.id,
+          rankStageId,
+          timeSec,
+          journeyStartedAt: progress.journeyStartedAt,
+          journeyCompletedAt: progress.journeyCompletedAt,
+        };
+
+        log('📤 Syncing to database...', 'info');
+
+        // Call API
+        const response = await fetch('/api/leaderboard/sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          log(`❌ Sync failed: ${error.error || 'Unknown error'}`, 'error');
+          if (error.debug) {
+            log(`🔍 Debug: ${JSON.stringify(error.debug)}`, 'error');
+          }
+          btn.disabled = false;
+          btn.textContent = '🚀 Force Sync Now';
+          return;
+        }
+
+        const result = await response.json();
+        log('✅ Sync successful!', 'success');
+        log(`📊 Result: ${result.message}`, 'success');
+        log('', 'info');
+        log('🔄 Please refresh the leaderboard page to see updated ranking', 'success');
+        
+        btn.textContent = '✅ Sync Complete';
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = '🚀 Force Sync Now';
+        }, 3000);
+      } catch (error) {
+        log(`❌ Error: ${error.message}`, 'error');
+        btn.disabled = false;
+        btn.textContent = '🚀 Force Sync Now';
+      }
+    }
+  </script>
+</body>
+</html>

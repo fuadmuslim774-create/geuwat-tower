@@ -202,14 +202,18 @@ export function updateOnStageComplete(stageId: StageId, durationSeconds: number)
   syncFullProgress(nextProgress);
 }
 
-async function syncLeaderboardEntry(progress: JourneyProgress) {
+async function syncLeaderboardEntry(progress: JourneyProgress): Promise<boolean> {
+  console.log('[syncLeaderboardEntry] Starting sync process');
+  
   try {
     // Get current user profile
     const user = getCurrentUser();
     if (!user) {
       console.warn('[syncLeaderboardEntry] No user session found, skipping sync');
-      return;
+      return false;
     }
+
+    console.log('[syncLeaderboardEntry] User session found:', user.id);
 
     // Calculate completion time in seconds
     const timeSec = getJourneyCompletionTimeSeconds(progress, Date.now());
@@ -226,6 +230,8 @@ async function syncLeaderboardEntry(progress: JourneyProgress) {
       journeyCompletedAt: progress.journeyCompletedAt,
     };
 
+    console.log('[syncLeaderboardEntry] Sending payload to API:', payload);
+
     // Make POST request to sync endpoint
     const response = await fetch('/api/leaderboard/sync', {
       method: 'POST',
@@ -239,16 +245,23 @@ async function syncLeaderboardEntry(progress: JourneyProgress) {
       const errorData = await response.json().catch(() => ({}));
       console.error('[syncLeaderboardEntry] API call failed:', {
         status: response.status,
+        statusText: response.statusText,
         error: errorData,
       });
-      return;
+      return false;
     }
 
     const result = await response.json();
     console.log('[syncLeaderboardEntry] Sync successful:', result);
+    return true;
   } catch (error) {
-    // Log error but don't block user flow
-    console.error('[syncLeaderboardEntry] Unexpected error during sync:', error);
+    // Log detailed error information and propagate failure status
+    console.error('[syncLeaderboardEntry] Unexpected error during sync:', {
+      error,
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    return false;
   }
 }
 
@@ -415,5 +428,61 @@ export async function restoreProgressFromDatabase(): Promise<JourneyProgress | n
   } catch (error) {
     console.error('[restoreProgressFromDatabase] Unexpected error:', error);
     return null;
+  }
+}
+
+/**
+ * Initialize journey_started_at on first login if not already set
+ * This ensures users appear in leaderboard rankings immediately after login
+ * 
+ * @returns Promise<boolean> - true if sync completes successfully, false if sync fails or journeyStartedAt is already set
+ */
+export async function initializeJourneyStartOnFirstLogin(): Promise<boolean> {
+  console.log('[initializeJourneyStartOnFirstLogin] Starting initialization process');
+  
+  try {
+    const progress = getOrInitProgress();
+    
+    // If journey already started, no need to initialize
+    if (progress.journeyStartedAt !== null) {
+      console.log('[initializeJourneyStartOnFirstLogin] Journey already started, skipping initialization');
+      return false;
+    }
+    
+    console.log('[initializeJourneyStartOnFirstLogin] Journey not started, initializing...');
+    
+    // Set journey_started_at to now
+    const now = Date.now();
+    const updatedProgress: JourneyProgress = {
+      ...progress,
+      journeyStartedAt: now,
+    };
+    
+    writeProgress(updatedProgress);
+    console.log('[initializeJourneyStartOnFirstLogin] Set journeyStartedAt in local storage:', now);
+    
+    // Sync to database immediately and check return value
+    console.log('[initializeJourneyStartOnFirstLogin] Syncing to database...');
+    const syncSuccess = await syncLeaderboardEntry(updatedProgress);
+    
+    if (!syncSuccess) {
+      console.error('[initializeJourneyStartOnFirstLogin] Database sync failed');
+      return false;
+    }
+    
+    console.log('[initializeJourneyStartOnFirstLogin] Database sync completed successfully');
+    
+    // Dispatch event to update UI
+    window.dispatchEvent(new Event('gt_progress_changed'));
+    
+    console.log('[initializeJourneyStartOnFirstLogin] Initialization completed successfully');
+    return true;
+  } catch (error) {
+    console.error('[initializeJourneyStartOnFirstLogin] Unexpected error during initialization:', {
+      error,
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    return false;
   }
 }

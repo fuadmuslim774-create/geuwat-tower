@@ -132,6 +132,8 @@ export default function GenerationRanksPage() {
     });
   }, [rows, nowMs, progress.journeyStartedAt, progress.journeyCompletedAt]);
 
+  const offset = (pageInfo.page - 1) * pageInfo.pageSize;
+
   return (
     <AppShell>
       <main className="min-h-screen px-4 sm:px-6 md:px-12 pb-12 relative flex flex-col items-center overflow-auto custom-scrollbar">
@@ -250,7 +252,7 @@ export default function GenerationRanksPage() {
                               style={{ backgroundColor: TABLE_LINE, boxShadow: `0 0 10px ${TABLE_LINE_SHADOW}` }}
                               aria-hidden="true"
                             />
-                            {idx + 1}
+                            {offset + idx + 1}
                           </div>
                           <div className={`bg-[#0a1114] p-2 text-center flex items-center justify-center relative overflow-hidden min-w-0 ${box}`} style={{ color: fg }}>
                             <div
