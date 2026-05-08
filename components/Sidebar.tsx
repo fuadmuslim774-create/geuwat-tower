@@ -153,24 +153,23 @@ export default function Sidebar() {
                 await signOut();
                 
                 const keys = getStorageKeys();
-                // Clear profile and settings (user-specific UI state)
+                // Clear all user-specific data from localStorage
                 window.localStorage.removeItem(keys.profile);
                 window.localStorage.removeItem(keys.sfxEnabled);
-                
-                // IMPORTANT: DO NOT clear progress!
-                // Progress should persist across login sessions
-                // It will be synced to database and restored on next login
-                // window.localStorage.removeItem(keys.progress); // REMOVED
+                window.localStorage.removeItem(keys.progress);
                 
                 // Clear auth session (already done by signOut, but ensure it's cleared)
                 window.localStorage.removeItem('geuwat_user');
                 
-                // Clear session storage (temporary run state)
+                // Clear session storage (temporary run state and flags)
                 Object.keys(window.sessionStorage).forEach((key) => {
                   if (key.startsWith(keys.runPrefix) || key.startsWith(keys.resultPrefix)) {
                     window.sessionStorage.removeItem(key);
                   }
                 });
+                
+                // Clear progress_restored flag to ensure new account restores from database
+                window.sessionStorage.removeItem('progress_restored');
                 
                 window.dispatchEvent(new Event('gt_profile_changed'));
                 window.dispatchEvent(new Event('gt_progress_changed'));
