@@ -158,6 +158,8 @@ create table if not exists public.leaderboard_entries (
   user_id uuid primary key references public.profiles (id) on delete cascade,
   rank_stage_id public.stage_id not null,
   time_sec integer null,
+  journey_started_at timestamptz null,
+  journey_completed_at timestamptz null,
   updated_at timestamptz not null default now(),
 
   constraint time_sec_nonneg check (time_sec is null or time_sec >= 0)
@@ -165,6 +167,8 @@ create table if not exists public.leaderboard_entries (
 
 create index if not exists leaderboard_entries_rank_idx on public.leaderboard_entries (rank_stage_id);
 create index if not exists leaderboard_entries_updated_at_idx on public.leaderboard_entries (updated_at desc);
+create index if not exists leaderboard_entries_journey_started_at_idx on public.leaderboard_entries (journey_started_at);
+create index if not exists leaderboard_entries_journey_completed_at_idx on public.leaderboard_entries (journey_completed_at);
 
 -- Helpful view for reading global ranks (join profile fields + leaderboard).
 drop view if exists public.v_global_ranks;
@@ -178,11 +182,13 @@ select
   p.batch_id,
   le.rank_stage_id,
   le.time_sec,
+  le.journey_started_at,
+  le.journey_completed_at,
   le.updated_at
 from public.profiles p
 left join public.leaderboard_entries le on le.user_id = p.id;
 
--- Ordered view for pagination: stage rank desc, then time asc, then username.
+-- Ordered view for pagination: priority tier (active users first), then stage rank desc, then time asc, then username.
 drop view if exists public.v_global_ranks_ordered;
 create view public.v_global_ranks_ordered
 with (security_invoker = true)
@@ -194,6 +200,8 @@ select
   p.batch_id,
   le.rank_stage_id,
   le.time_sec,
+  le.journey_started_at,
+  le.journey_completed_at,
   le.updated_at,
   case le.rank_stage_id
     when 'alphabet' then 1
@@ -206,13 +214,31 @@ select
     when 'final_d_ed' then 8
     when 'royal_king' then 9
     else 0
-  end as rank_stage_num
+  end as rank_stage_num,
+  -- Priority tier: Active users (with journey_started_at) rank above inactive users
+  case
+    when le.journey_started_at is not null then 1  -- Active users (tier 1)
+    else 2  -- Inactive users (tier 2)
+  end as priority_tier,
+  -- Calculate effective time for sorting within same tier
+  case
+    when le.time_sec is not null then 
+      -- Completed: use actual time_sec
+      le.time_sec
+    when le.journey_started_at is not null and le.journey_completed_at is null then
+      -- In progress: calculate elapsed time
+      extract(epoch from (now() - le.journey_started_at))::integer
+    else
+      -- Not started: use very large number
+      2147483647
+  end as effective_time_sec
 from public.profiles p
 left join public.leaderboard_entries le on le.user_id = p.id
 order by
-  rank_stage_num desc,
-  coalesce(le.time_sec, 2147483647) asc,
-  p.username asc;
+  priority_tier asc,           -- Active users (tier 1) first, inactive users (tier 2) last
+  rank_stage_num desc,          -- Within same tier, higher stage first
+  effective_time_sec asc,       -- Within same stage, faster time first
+  p.username asc;               -- Within same time, alphabetical
 
 -- ===== Row Level Security =====
 alter table public.batches enable row level security;
