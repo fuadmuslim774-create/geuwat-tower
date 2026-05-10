@@ -315,7 +315,9 @@ function QuizPlay({
           );
         })}
       </div>
-      <p className="text-[11px] text-white/40">Hint IPA: {q.ipa}</p>
+      {!['lax_vowel', 'tense_vowel', 'diphthong', 'voiceless', 'voiced'].includes(run.stageId) && (
+        <p className="text-[11px] text-white/40">Hint IPA: {q.ipa}</p>
+      )}
     </div>
   );
 

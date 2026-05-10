@@ -2,17 +2,30 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import AppShell from '../components/AppShell';
-import JourneyMap from '../components/JourneyMap';
 import { getOrInitProfile } from '../lib/profile';
 import { canPlayStage, createInitialProgress, getOrInitProgress } from '../lib/progress';
 import { STAGE_BY_ID } from '../lib/stages';
 import type { JourneyProgress, StageId } from '../types/geuwat';
 
+// Lazy load JourneyMap component
+const JourneyMap = dynamic(() => import('../components/JourneyMap'), {
+  loading: () => (
+    <div className="w-full h-full flex items-center justify-center">
+      <div className="font-headline text-neon-cyan/60 text-lg animate-pulse">
+        Loading journey map...
+      </div>
+    </div>
+  ),
+  ssr: false,
+});
+
 export default function JourneyPage() {
   const router = useRouter();
   const [progress, setProgress] = useState<JourneyProgress>(() => createInitialProgress());
   const [selectedStageId, setSelectedStageId] = useState<StageId>('alphabet');
+  const [showProgress, setShowProgress] = useState(true); // State for hide/show progress panel
 
   useEffect(() => {
     getOrInitProfile();
@@ -85,70 +98,88 @@ export default function JourneyPage() {
         </div>
 
         <div
-          className="relative z-30 mt-6 w-[min(92vw,420px)] md:fixed md:top-[200px] md:right-8 md:w-80 bg-surface-container/60 backdrop-blur-md border border-outline-variant p-5 rounded-lg"
+          className={`relative z-30 mt-6 w-[min(92vw,420px)] md:fixed md:top-[200px] md:right-8 md:w-80 bg-surface-container/60 backdrop-blur-md border border-outline-variant rounded-lg transition-all duration-300 ${
+            showProgress ? 'p-5' : 'p-0'
+          }`}
           id="progress-panel"
         >
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <h3 className="font-headline text-lg font-black text-on-surface uppercase tracking-tighter">PROGRESS</h3>
-              <p className="text-[10px] font-bold font-headline tracking-widest text-white">
-                {!selectedProgress.unlocked
-                  ? 'SCAN: LOCKED'
-                  : selectedProgress.bestPercentage >= 100
-                    ? 'SCAN: COMPLETE'
-                    : selectedProgress.bestPercentage >= 1
-                      ? 'SCAN: IN PROGRESS'
-                      : 'SCAN: READY'}
-              </p>
-            </div>
-          </div>
-          <div className="space-y-3">
-            <div className="h-1 bg-surface-container-highest rounded-full overflow-hidden">
-              <div
-                className="h-full transition-all duration-300"
-                style={{
-                  width: `${selectedProgress.bestPercentage}%`,
-                  backgroundColor: selectedStage.accentColor,
-                  boxShadow: `0 0 8px ${selectedStage.accentColor}`,
-                }}
-              />
-            </div>
-            <p className="text-[10px] text-zinc-400 font-body italic leading-relaxed">{congratsText}</p>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="p-2 bg-black/40 rounded border border-white/5 flex flex-col">
-                <p className="text-[9px] text-zinc-500 font-headline uppercase mb-1 tracking-tighter">Completion_Status</p>
-                <div className="flex items-center pt-1">
-                  <span
-                    className="font-headline text-2xl font-black transition-all duration-300"
-                    style={{
-                      color: selectedStage.accentColor,
-                      filter: `drop-shadow(0 0 10px ${selectedStage.glow})`,
-                    }}
-                  >
-                    {selectedProgress.bestPercentage}%
-                  </span>
-                </div>
-              </div>
-              <div className="p-2 bg-black/40 rounded border border-white/5 relative overflow-hidden">
-                <div
-                  className="absolute left-0 top-0 bottom-0 w-[2px]"
-                  style={{ backgroundColor: selectedStage.accentColor, boxShadow: `0 0 10px ${selectedStage.glow}` }}
-                  aria-hidden="true"
-                />
-                <div
-                  className="absolute left-0 right-0 top-0 h-[2px]"
-                  style={{ backgroundColor: selectedStage.accentColor, boxShadow: `0 0 10px ${selectedStage.glow}` }}
-                  aria-hidden="true"
-                />
-                <div className="pl-3">
-                  <p className="text-[9px] text-zinc-500 font-headline uppercase">CATEGORY</p>
-                  <p className="text-sm font-bold transition-all duration-300" style={{ color: selectedStage.accentColor }}>
-                    {categoryName}
+          {/* Hide/Show Button */}
+          <button
+            type="button"
+            onClick={() => setShowProgress(!showProgress)}
+            className="absolute -top-3 -left-3 z-10 w-10 h-10 bg-neon-cyan/90 hover:bg-neon-cyan border-2 border-black rounded-full flex items-center justify-center transition-all hover:scale-110 active:scale-95 shadow-lg"
+            aria-label={showProgress ? 'Hide progress' : 'Show progress'}
+          >
+            <span className="material-symbols-outlined text-black text-xl font-bold">
+              {showProgress ? 'visibility_off' : 'visibility'}
+            </span>
+          </button>
+
+          {showProgress && (
+            <>
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h3 className="font-headline text-lg font-black text-on-surface uppercase tracking-tighter">PROGRESS</h3>
+                  <p className="text-[10px] font-bold font-headline tracking-widest text-white">
+                    {!selectedProgress.unlocked
+                      ? 'SCAN: LOCKED'
+                      : selectedProgress.bestPercentage >= 100
+                        ? 'SCAN: COMPLETE'
+                        : selectedProgress.bestPercentage >= 1
+                          ? 'SCAN: IN PROGRESS'
+                          : 'SCAN: READY'}
                   </p>
                 </div>
               </div>
-            </div>
-          </div>
+              <div className="space-y-3">
+                <div className="h-1 bg-surface-container-highest rounded-full overflow-hidden">
+                  <div
+                    className="h-full transition-all duration-300"
+                    style={{
+                      width: `${selectedProgress.bestPercentage}%`,
+                      backgroundColor: selectedStage.accentColor,
+                      boxShadow: `0 0 8px ${selectedStage.accentColor}`,
+                    }}
+                  />
+                </div>
+                <p className="text-[10px] text-zinc-400 font-body italic leading-relaxed">{congratsText}</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="p-2 bg-black/40 rounded border border-white/5 flex flex-col">
+                    <p className="text-[9px] text-zinc-500 font-headline uppercase mb-1 tracking-tighter">Completion_Status</p>
+                    <div className="flex items-center pt-1">
+                      <span
+                        className="font-headline text-2xl font-black transition-all duration-300"
+                        style={{
+                          color: selectedStage.accentColor,
+                          filter: `drop-shadow(0 0 10px ${selectedStage.glow})`,
+                        }}
+                      >
+                        {selectedProgress.bestPercentage}%
+                      </span>
+                    </div>
+                  </div>
+                  <div className="p-2 bg-black/40 rounded border border-white/5 relative overflow-hidden">
+                    <div
+                      className="absolute left-0 top-0 bottom-0 w-[2px]"
+                      style={{ backgroundColor: selectedStage.accentColor, boxShadow: `0 0 10px ${selectedStage.glow}` }}
+                      aria-hidden="true"
+                    />
+                    <div
+                      className="absolute left-0 right-0 top-0 h-[2px]"
+                      style={{ backgroundColor: selectedStage.accentColor, boxShadow: `0 0 10px ${selectedStage.glow}` }}
+                      aria-hidden="true"
+                    />
+                    <div className="pl-3">
+                      <p className="text-[9px] text-zinc-500 font-headline uppercase">CATEGORY</p>
+                      <p className="text-sm font-bold transition-all duration-300" style={{ color: selectedStage.accentColor }}>
+                        {categoryName}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         <JourneyMap

@@ -26,6 +26,22 @@ function isValidStageId(value: unknown): value is StageId {
   return typeof value === 'string' && VALID_STAGE_IDS.includes(value as StageId);
 }
 
+function validateTimeSec(timeSec: number | null, rankStageId: StageId): boolean {
+  // Null is valid for in-progress users
+  if (timeSec === null) return true;
+  
+  // Get stage number (1-9)
+  const stageNum = VALID_STAGE_IDS.indexOf(rankStageId) + 1;
+  
+  // Minimum: 10 seconds per stage (very fast)
+  const minTime = stageNum * 10;
+  
+  // Maximum: 600 seconds (10 minutes) per stage (very slow)
+  const maxTime = stageNum * 600;
+  
+  return timeSec >= minTime && timeSec <= maxTime;
+}
+
 export async function POST(req: Request) {
   try {
     // Parse request body
@@ -55,6 +71,15 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
+    }
+
+    // Validate timeSec is within reasonable bounds for the rank stage
+    if (timeSec !== null && timeSec !== undefined && !validateTimeSec(timeSec, rankStageId)) {
+      console.warn('[leaderboard/sync] timeSec validation failed:', { timeSec, rankStageId, userId });
+      return NextResponse.json(
+        { success: false, error: 'timeSec value is outside reasonable bounds for the rank stage.' },
+        { status: 400 },
+      );
     }
 
     // Get Supabase service role client

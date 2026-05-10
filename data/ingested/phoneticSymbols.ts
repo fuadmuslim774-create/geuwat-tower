@@ -106,8 +106,8 @@ export const SYMBOL_BANK: SymbolItem[] = [
         "ipa": "/ˈtiːtʃɚ/"
       },
       {
-        "word": "better",
-        "ipa": "/ˈbɛtɚ/"
+        "word": "father",
+        "ipa": "/ˈfɑðɚ/"
       },
       {
         "word": "water",
@@ -273,8 +273,8 @@ export const SYMBOL_BANK: SymbolItem[] = [
     "symbol": "ɪə",
     "examples": [
       {
-        "word": "idea",
-        "ipa": "/aɪˈdɪə/"
+        "word": "beer",
+        "ipa": "/bɪə/"
       },
       {
         "word": "near",

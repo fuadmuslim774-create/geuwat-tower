@@ -49,11 +49,16 @@ function buildIpaChoices(correctIpa: string): [string, string, string] {
   return shuffle([correctIpa, distractors[0], distractors[1]]) as [string, string, string];
 }
 
-function buildSymbolChoices(symbols: string[], correct: string): [string, string, string] {
-  const distractors = sampleManyUnique(
-    symbols.filter((s) => s !== correct),
-    2,
-  );
+function buildSymbolChoices(symbols: string[], correct: string, ipa: string): [string, string, string] {
+  // Filter out symbols that appear in the IPA to avoid ambiguous answers
+  const validDistractors = symbols.filter((s) => s !== correct && !ipa.includes(s));
+  
+  // If we don't have enough valid distractors, fall back to any symbol except correct
+  const distractorPool = validDistractors.length >= 2 
+    ? validDistractors 
+    : symbols.filter((s) => s !== correct);
+  
+  const distractors = sampleManyUnique(distractorPool, 2);
   return shuffle([correct, distractors[0], distractors[1]]) as [string, string, string];
 }
 
@@ -104,7 +109,7 @@ function buildPhoneticQuestions(symbols: string[], count: number): PhoneticSymbo
       word: example.word,
       ipa: example.ipa,
       correctSymbol: item.symbol,
-      choices: buildSymbolChoices(selectedSymbols, item.symbol),
+      choices: buildSymbolChoices(selectedSymbols, item.symbol, example.ipa),
       seconds: SECONDS_PER_VARIANT.phonetic_symbol,
     };
   });
