@@ -25,10 +25,8 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
-# Supabase local development files (exclude local config, but keep migrations and schema)
-supabase/.temp/
-supabase/config.toml
-supabase/seed.sql
+# Supabase folder (should not be in git)
+supabase/
 
 # Kiro specs and configuration
 .kiro/

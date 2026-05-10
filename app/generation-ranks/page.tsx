@@ -175,8 +175,6 @@ export default function GenerationRanksPage() {
 
   const offset = (pageInfo.page - 1) * pageInfo.pageSize;
 
-  const offset = (pageInfo.page - 1) * pageInfo.pageSize;
-
   return (
     <AppShell>
       <main className="min-h-screen px-4 sm:px-6 md:px-12 pb-12 relative flex flex-col items-center overflow-auto custom-scrollbar">
