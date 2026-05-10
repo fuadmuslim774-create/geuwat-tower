@@ -66,7 +66,22 @@ export const signOut = async () => {
       }
     }
     
+    // Clear all user-specific data from localStorage
     localStorage.removeItem('geuwat_user');
+    localStorage.removeItem('gt_profile_v1');
+    localStorage.removeItem('gt_progress_v1');
+    localStorage.removeItem('gt_sfx_enabled_v1');
+    localStorage.removeItem('gt_leaderboard_v1');
+    
+    // Clear session-specific data from sessionStorage
+    sessionStorage.removeItem('progress_restored');
+    
+    // Clear run and result data from sessionStorage
+    Object.keys(sessionStorage).forEach((key) => {
+      if (key.startsWith('gt_run_v1:') || key.startsWith('gt_result_v1:')) {
+        sessionStorage.removeItem(key);
+      }
+    });
   }
 }
 
