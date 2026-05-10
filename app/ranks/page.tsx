@@ -1,13 +1,26 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import AppShell from '../../components/AppShell';
 import { getAvatarSrc } from '../../lib/avatars';
 import { getOrInitProfile } from '../../lib/profile';
-import { createInitialProgress, getOrInitProgress } from '../../lib/progress';
+import { createInitialProgress, getOrInitProgress, getRankStageId, getCompletionTimeSeconds } from '../../lib/progress';
 import { STAGE_ORDER, STAGE_BY_ID } from '../../lib/stages';
-import { fetchGlobalRanks } from '../../lib/supabase/leaderboard';
-import type { AvatarId } from '../../types/geuwat';
+import { fetchGlobalRanks, fetchPerStageRanks } from '../../lib/supabase/leaderboard';
+import type { AvatarId, StageId } from '../../types/geuwat';
+
+// Lazy load StageSelector component
+const StageSelector = dynamic(() => import('../../components/StageSelector'), {
+  loading: () => (
+    <div className="w-full flex items-center justify-center py-12">
+      <div className="font-headline text-neon-cyan/60 text-lg animate-pulse">
+        Loading stage selector...
+      </div>
+    </div>
+  ),
+  ssr: false,
+});
 
 type RankRow = {
   id: string;
@@ -57,11 +70,13 @@ export default function RanksPage() {
   const [avatarId, setAvatarId] = useState<AvatarId>('chibi1');
   const [progress, setProgress] = useState(() => createInitialProgress());
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [selectedStage, setSelectedStage] = useState<StageId | null | undefined>(undefined); // undefined = selection screen, null = Overall, StageId = specific stage
   const [page, setPage] = useState(1);
   const pageSize = 10;
   const [rows, setRows] = useState<RankRow[]>([]);
   const [pageInfo, setPageInfo] = useState<{ page: number; totalPages: number; pageSize: number }>({ page: 1, totalPages: 1, pageSize });
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const profile = getOrInitProfile();
@@ -94,17 +109,25 @@ export default function RanksPage() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!profileId) return () => {};
+    if (!profileId || selectedStage === undefined) return () => {}; // Don't fetch if on selection screen
     setLoading(true);
-    fetchGlobalRanks({ page, pageSize, currentUserId: profileId })
+    setError(null);
+    
+    const fetchData = selectedStage === null
+      ? fetchGlobalRanks({ page, pageSize, currentUserId: profileId })
+      : fetchPerStageRanks({ stageId: selectedStage, page, pageSize, currentUserId: profileId });
+    
+    fetchData
       .then((res) => {
         if (cancelled) return;
         setRows(res.rows as RankRow[]);
         setPageInfo({ page: res.page, totalPages: res.totalPages, pageSize: res.pageSize });
         setLoading(false);
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
+        console.error('[RanksPage] Error fetching ranks:', err);
+        setError('Unable to load rankings. Please try again.');
         setRows([]);
         setPageInfo({ page: 1, totalPages: 1, pageSize });
         setLoading(false);
@@ -112,24 +135,32 @@ export default function RanksPage() {
     return () => {
       cancelled = true;
     };
-  }, [page, pageSize, profileId, avatarId]); // Added avatarId dependency to re-fetch when avatar changes
+  }, [page, pageSize, profileId, avatarId, selectedStage]); // Added selectedStage dependency
 
   // Recalculate time display for current user every second
   const displayRows = useMemo(() => {
     return rows.map((row) => {
-      if (row.highlight && row.time !== '--:--:--' && progress.journeyStartedAt && !progress.journeyCompletedAt) {
-        // Current user with in-progress journey - recalculate elapsed time
-        const elapsedMs = nowMs - progress.journeyStartedAt;
-        const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
-        const hh = Math.floor(elapsedSec / 3600);
-        const mm = Math.floor((elapsedSec % 3600) / 60);
-        const ss = elapsedSec % 60;
-        const timeDisplay = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
-        return { ...row, time: timeDisplay };
+      if (row.highlight && row.time !== '--:--:--' && selectedStage === null) {
+        // Current user in Overall mode - calculate sum of best times from progress
+        const rankStageId = getRankStageId(progress);
+        const timeSec = getCompletionTimeSeconds(progress, rankStageId);
+        
+        if (timeSec !== null) {
+          const hh = Math.floor(timeSec / 3600);
+          const mm = Math.floor((timeSec % 3600) / 60);
+          const ss = timeSec % 60;
+          const timeDisplay = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+          return { ...row, time: timeDisplay };
+        }
       }
       return row;
     });
-  }, [rows, nowMs, progress.journeyStartedAt, progress.journeyCompletedAt]);
+  }, [rows, progress, selectedStage]);
+
+  const handleBackToSelection = () => {
+    setSelectedStage(undefined);
+    setPage(1);
+  };
 
   const offset = (pageInfo.page - 1) * pageInfo.pageSize;
 
@@ -156,8 +187,22 @@ export default function RanksPage() {
           </div>
         </div>
 
-        <section className="w-full max-w-4xl">
-          {/* Your Position Section */}
+        {selectedStage === undefined ? (
+          /* Stage Selection Screen */
+          <div className="relative z-10 w-full flex-1 flex flex-col items-center justify-center py-8 gap-6 shrink-0">
+            <div className="w-full max-w-4xl px-4">
+              <StageSelector 
+                selectedStage={null} 
+                onStageChange={(stageId) => {
+                  setSelectedStage(stageId);
+                  setPage(1);
+                }}
+              />
+            </div>
+          </div>
+        ) : (
+          <section className="w-full max-w-4xl">
+            {/* Your Position Section */}
           {rows.some(r => r.highlight) && (
             <div className="mb-6 p-4 bg-surface-container/60 backdrop-blur-md border border-neon-cyan/30 rounded-lg">
               <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -221,8 +266,21 @@ export default function RanksPage() {
                 >
                   {loading ? (
                     <div className="col-span-4 bg-[#0a1114] p-6 text-center text-white/60">Loading ranks…</div>
+                  ) : error ? (
+                    <div className="col-span-4 bg-[#0a1114] p-6 text-center">
+                      <p className="text-red-400 mb-2">{error}</p>
+                      <button
+                        type="button"
+                        onClick={() => setPage(p => p)} // Trigger re-fetch
+                        className="text-neon-cyan hover:text-white transition-colors text-sm"
+                      >
+                        Retry
+                      </button>
+                    </div>
                   ) : rows.length === 0 ? (
-                    <div className="col-span-4 bg-[#0a1114] p-6 text-center text-white/60">No ranks yet.</div>
+                    <div className="col-span-4 bg-[#0a1114] p-6 text-center text-white/60">
+                      {selectedStage ? 'No users have completed this stage yet' : 'No ranks yet.'}
+                    </div>
                   ) : (
                     displayRows.map((row, idx) => {
                     const isYou = Boolean(row.highlight);
@@ -385,28 +443,38 @@ export default function RanksPage() {
             </div>
           </div>
 
-          <div className="flex justify-center items-center mt-8 gap-3 font-headline text-[15px] text-neon-cyan">
-            <button
-              type="button"
-              className="hover:text-white transition-colors disabled:opacity-40 disabled:hover:text-neon-cyan"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={pageInfo.page <= 1}
+          <div className="flex flex-col justify-center items-center mt-8 gap-4 font-headline text-[15px] text-neon-cyan">
+            <div className="flex items-center gap-4">
+              <button
+                type="button"
+                className="hover:text-white transition-colors disabled:opacity-40 disabled:hover:text-neon-cyan"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={pageInfo.page <= 1}
+              >
+                &lt; Prev
+              </button>
+              <span className="text-neon-amber font-bold">
+                {pageInfo.page} / {pageInfo.totalPages}
+              </span>
+              <button
+                type="button"
+                className="hover:text-white transition-colors disabled:opacity-40 disabled:hover:text-neon-cyan"
+                onClick={() => setPage((p) => Math.min(pageInfo.totalPages, p + 1))}
+                disabled={pageInfo.page >= pageInfo.totalPages}
+              >
+                Next &gt;
+              </button>
+            </div>
+            <button 
+              type="button" 
+              onClick={handleBackToSelection} 
+              className="hover:text-white transition-colors"
             >
-              &lt; Prev
-            </button>
-            <span className="text-neon-amber font-bold">
-              {pageInfo.page} / {pageInfo.totalPages}
-            </span>
-            <button
-              type="button"
-              className="hover:text-white transition-colors disabled:opacity-40 disabled:hover:text-neon-cyan"
-              onClick={() => setPage((p) => Math.min(pageInfo.totalPages, p + 1))}
-              disabled={pageInfo.page >= pageInfo.totalPages}
-            >
-              Next &gt;
+              &lt; Back to Selection
             </button>
           </div>
         </section>
+        )}
       </main>
     </AppShell>
   );

@@ -81,6 +81,12 @@ export function getOrInitProgress(): JourneyProgress {
 }
 
 export function getCompletionTimeSeconds(progress: JourneyProgress, stageId: StageId): number | null {
+  // Fix: Only calculate completion time if journey is complete (all 9 stages completed)
+  // This prevents incomplete journeys from showing completion times in leaderboard
+  if (!isJourneyComplete(progress)) {
+    return null;
+  }
+
   const idx = STAGE_ORDER.indexOf(stageId);
   if (idx < 0) return null;
   let total = 0;
@@ -215,11 +221,11 @@ async function syncLeaderboardEntry(progress: JourneyProgress): Promise<boolean>
 
     console.log('[syncLeaderboardEntry] User session found:', user.id);
 
-    // Calculate completion time in seconds
-    const timeSec = getJourneyCompletionTimeSeconds(progress, Date.now());
-
     // Get highest completed stage
     const rankStageId = getRankStageId(progress);
+
+    // Calculate completion time in seconds (sum of best stage times)
+    const timeSec = getCompletionTimeSeconds(progress, rankStageId);
 
     // Construct payload with journey timestamps
     const payload = {
@@ -286,8 +292,8 @@ async function syncInitialJourneyStart(progress: JourneyProgress) {
     // Get highest completed stage (or 'alphabet' if none completed)
     const rankStageId = getRankStageId(progress);
 
-    // Calculate completion time in seconds (will be null if not completed)
-    const timeSec = getJourneyCompletionTimeSeconds(progress, Date.now());
+    // Calculate completion time in seconds (sum of best stage times)
+    const timeSec = getCompletionTimeSeconds(progress, rankStageId);
 
     // Construct payload with journey timestamps
     const payload = {
@@ -377,6 +383,12 @@ export function canPlayStage(stageId: StageId, progress: JourneyProgress): boole
   return Boolean(progress.stages[stageId]?.unlocked);
 }
 
+/**
+ * @deprecated Use getCompletionTimeSeconds() instead.
+ * This function calculates elapsed calendar time (time between journeyStartedAt and journeyCompletedAt),
+ * not actual gameplay time. It is kept for backward compatibility and analytics purposes only.
+ * Do NOT use this function for leaderboard ranking calculations.
+ */
 export function getJourneyCompletionTimeSeconds(progress: JourneyProgress, nowMs: number): number | null {
   if (progress.journeyStartedAt === null) return null;
   const end = progress.journeyCompletedAt ?? nowMs;

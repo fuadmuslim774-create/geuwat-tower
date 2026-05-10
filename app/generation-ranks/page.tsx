@@ -1,12 +1,25 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import AppShell from '../../components/AppShell';
 import { getAvatarSrc } from '../../lib/avatars';
 import { getOrInitProfile } from '../../lib/profile';
-import { createInitialProgress, getOrInitProgress } from '../../lib/progress';
-import { fetchBatchRanks, fetchBatches } from '../../lib/supabase/leaderboard';
-import type { AvatarId } from '../../types/geuwat';
+import { createInitialProgress, getOrInitProgress, getRankStageId, getCompletionTimeSeconds } from '../../lib/progress';
+import { fetchBatchRanks, fetchBatches, fetchPerStageRanks } from '../../lib/supabase/leaderboard';
+import type { AvatarId, StageId } from '../../types/geuwat';
+
+// Lazy load StageSelector component
+const StageSelector = dynamic(() => import('../../components/StageSelector'), {
+  loading: () => (
+    <div className="w-full flex items-center justify-center py-12">
+      <div className="font-headline text-neon-cyan/60 text-lg animate-pulse">
+        Loading stage selector...
+      </div>
+    </div>
+  ),
+  ssr: false,
+});
 
 type RankRow = {
   id: string;
@@ -22,6 +35,7 @@ const TABLE_LINE_SHADOW = 'rgba(255,140,0,0.55)';
 
 export default function GenerationRanksPage() {
   const [selectedGenerationId, setSelectedGenerationId] = useState<string | null>(null);
+  const [selectedStage, setSelectedStage] = useState<StageId | null | undefined>(undefined); // undefined = selection screen, null = Overall, StageId = specific stage
   const [profileId, setProfileId] = useState('');
   const [batchId, setBatchId] = useState<string | null>(null);
   const [username, setUsername] = useState('LEARNER_01');
@@ -34,6 +48,7 @@ export default function GenerationRanksPage() {
   const [rows, setRows] = useState<RankRow[]>([]);
   const [pageInfo, setPageInfo] = useState<{ page: number; totalPages: number; pageSize: number }>({ page: 1, totalPages: 1, pageSize });
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const profile = getOrInitProfile();
@@ -95,17 +110,25 @@ export default function GenerationRanksPage() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!selectedBatch || !profileId) return () => {};
+    if (!selectedBatch || !profileId || selectedStage === undefined) return () => {}; // Don't fetch if on selection screen
     setLoading(true);
-    fetchBatchRanks({ page, pageSize, currentUserId: profileId, batchId: selectedBatch.id })
+    setError(null);
+    
+    const fetchData = selectedStage === null
+      ? fetchBatchRanks({ page, pageSize, currentUserId: profileId, batchId: selectedBatch.id })
+      : fetchPerStageRanks({ stageId: selectedStage, page, pageSize, currentUserId: profileId, batchId: selectedBatch.id });
+    
+    fetchData
       .then((res) => {
         if (cancelled) return;
         setRows(res.rows as RankRow[]);
         setPageInfo({ page: res.page, totalPages: res.totalPages, pageSize: res.pageSize });
         setLoading(false);
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
+        console.error('[GenerationRanksPage] Error fetching ranks:', err);
+        setError('Unable to load rankings. Please try again.');
         setRows([]);
         setPageInfo({ page: 1, totalPages: 1, pageSize });
         setLoading(false);
@@ -113,24 +136,42 @@ export default function GenerationRanksPage() {
     return () => {
       cancelled = true;
     };
-  }, [page, pageSize, profileId, selectedBatch, avatarId]); // Added avatarId dependency to re-fetch when avatar changes
+  }, [page, pageSize, profileId, selectedBatch, avatarId, selectedStage]); // Added selectedStage dependency
 
   // Recalculate time display for current user every second
   const displayRows = useMemo(() => {
     return rows.map((row) => {
-      if (row.highlight && row.time !== '--:--:--' && progress.journeyStartedAt && !progress.journeyCompletedAt) {
-        // Current user with in-progress journey - recalculate elapsed time
-        const elapsedMs = nowMs - progress.journeyStartedAt;
-        const elapsedSec = Math.max(0, Math.floor(elapsedMs / 1000));
-        const hh = Math.floor(elapsedSec / 3600);
-        const mm = Math.floor((elapsedSec % 3600) / 60);
-        const ss = elapsedSec % 60;
-        const timeDisplay = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
-        return { ...row, time: timeDisplay };
+      if (row.highlight && row.time !== '--:--:--' && selectedStage === null) {
+        // Current user in Overall mode - calculate sum of best times from progress
+        const rankStageId = getRankStageId(progress);
+        const timeSec = getCompletionTimeSeconds(progress, rankStageId);
+        
+        if (timeSec !== null) {
+          const hh = Math.floor(timeSec / 3600);
+          const mm = Math.floor((timeSec % 3600) / 60);
+          const ss = timeSec % 60;
+          const timeDisplay = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+          return { ...row, time: timeDisplay };
+        }
       }
       return row;
     });
-  }, [rows, nowMs, progress.journeyStartedAt, progress.journeyCompletedAt]);
+  }, [rows, progress, selectedStage]);
+
+  const handleStageChange = (stageId: StageId | null) => {
+    setSelectedStage(stageId);
+    setPage(1); // Reset to page 1 when stage changes
+  };
+
+  const handleBackToGenerationSelection = () => {
+    setSelectedGenerationId(null);
+    setSelectedStage(undefined); // Reset to selection screen when going back
+  };
+
+  const handleBackToStageSelection = () => {
+    setSelectedStage(undefined);
+    setPage(1);
+  };
 
   const offset = (pageInfo.page - 1) * pageInfo.pageSize;
 
@@ -165,6 +206,26 @@ export default function GenerationRanksPage() {
                 </button>
               ))}
             </div>
+          </div>
+        ) : selectedStage === undefined ? (
+          /* Stage Selection Screen */
+          <div className="relative z-10 w-full flex-1 flex flex-col items-center justify-center py-8 gap-6 shrink-0 pointer-events-auto">
+            <div className="w-full max-w-4xl px-4">
+              <StageSelector 
+                selectedStage={null} 
+                onStageChange={(stageId) => {
+                  setSelectedStage(stageId);
+                  setPage(1);
+                }}
+              />
+            </div>
+            <button 
+              type="button" 
+              onClick={handleBackToGenerationSelection} 
+              className="font-headline text-neon-cyan hover:text-white transition-colors text-[15px]"
+            >
+              &lt; Back to Generations
+            </button>
           </div>
         ) : (
           <section className="w-full max-w-4xl pointer-events-auto">
@@ -226,8 +287,21 @@ export default function GenerationRanksPage() {
                   >
                     {loading ? (
                       <div className="col-span-4 bg-[#0a1114] p-6 text-center text-white/60">Loading ranks…</div>
+                    ) : error ? (
+                      <div className="col-span-4 bg-[#0a1114] p-6 text-center">
+                        <p className="text-red-400 mb-2">{error}</p>
+                        <button
+                          type="button"
+                          onClick={() => setPage(p => p)} // Trigger re-fetch
+                          className="text-neon-cyan hover:text-white transition-colors text-sm"
+                        >
+                          Retry
+                        </button>
+                      </div>
                     ) : rows.length === 0 ? (
-                      <div className="col-span-4 bg-[#0a1114] p-6 text-center text-white/60">No ranks yet.</div>
+                      <div className="col-span-4 bg-[#0a1114] p-6 text-center text-white/60">
+                        {selectedStage ? 'No users have completed this stage yet' : 'No ranks yet.'}
+                      </div>
                     ) : (
                       displayRows.map((row, idx) => {
                       const isYou = Boolean(row.highlight);
@@ -336,8 +410,8 @@ export default function GenerationRanksPage() {
                   Next
                 </button>
               </div>
-              <button type="button" onClick={() => setSelectedGenerationId(null)} className="hover:text-white transition-colors">
-                &lt; Back
+              <button type="button" onClick={handleBackToStageSelection} className="hover:text-white transition-colors">
+                &lt; Back to Selection
               </button>
             </div>
           </section>

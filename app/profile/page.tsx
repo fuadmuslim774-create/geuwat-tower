@@ -1,14 +1,22 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import AppShell from '../../components/AppShell';
-import ProfileStageNode from '../../components/ProfileStageNode';
 import { AVATAR_IDS, getAvatarSrc } from '../../lib/avatars';
 import { fetchIsCurrentPlayerGreatestKing } from '../../lib/supabase/leaderboard';
 import { getOrInitProfile, updateAvatar, updateUsername } from '../../lib/profile';
 import { createInitialProgress, getOrInitProgress, getRankLabel, getRankStageId } from '../../lib/progress';
 import { STAGE_BY_ID } from '../../lib/stages';
 import type { AvatarId, JourneyProgress, StageId } from '../../types/geuwat';
+
+// Lazy load ProfileStageNode component
+const ProfileStageNode = dynamic(() => import('../../components/ProfileStageNode'), {
+  loading: () => (
+    <div className="w-24 h-24 rounded-full bg-surface-container/40 animate-pulse" />
+  ),
+  ssr: false,
+});
 
 export default function ProfilePage() {
   const [progress, setProgress] = useState<JourneyProgress>(() => createInitialProgress());

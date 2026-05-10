@@ -1,13 +1,15 @@
--- Migration: Prioritize active users (with journey_started_at) in leaderboard
--- Problem: Users who haven't started journey appear above active users
--- Solution: Add priority tier - active users always rank above inactive users
+-- Migration: Update v_global_ranks_ordered view to use sum of best times
+-- This script updates the view to remove elapsed time calculation for in-progress users
+-- and use time_sec directly (which now stores sum of best stage times).
+--
+-- IMPORTANT: Run this migration AFTER running migration_recalculate_completion_times.sql
 
 begin;
 
 -- Drop existing view
 drop view if exists public.v_global_ranks_ordered;
 
--- Recreate view with priority tier for active vs inactive users
+-- Recreate view with updated effective_time_sec calculation
 create view public.v_global_ranks_ordered
 with (security_invoker = true)
 as
@@ -39,15 +41,14 @@ select
     else 2  -- Inactive users (tier 2)
   end as priority_tier,
   -- Calculate effective time for sorting within same tier
+  -- CHANGED: Removed elapsed time calculation for in-progress users
+  -- Now uses time_sec directly (sum of best times for completed stages)
   case
     when le.time_sec is not null then 
-      -- Completed: use actual time_sec
+      -- Use actual time_sec (sum of best times for completed stages)
       le.time_sec
-    when le.journey_started_at is not null and le.journey_completed_at is null then
-      -- In progress: calculate elapsed time
-      extract(epoch from (now() - le.journey_started_at))::integer
     else
-      -- Not started: use very large number
+      -- Not started or no time recorded: use very large number
       2147483647
   end as effective_time_sec
 from public.profiles p
@@ -59,11 +60,3 @@ order by
   p.username asc;               -- Within same time, alphabetical
 
 commit;
-
--- Verify: Check that active users appear before inactive users
--- select username, 
---        case when journey_started_at is not null then 'ACTIVE' else 'INACTIVE' end as status,
---        rank_stage_id, 
---        journey_started_at
--- from public.v_global_ranks_ordered
--- limit 20;

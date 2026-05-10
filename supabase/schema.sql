@@ -189,6 +189,7 @@ from public.profiles p
 left join public.leaderboard_entries le on le.user_id = p.id;
 
 -- Ordered view for pagination: priority tier (active users first), then stage rank desc, then time asc, then username.
+-- NOTE: time_sec now stores sum of best stage times (not elapsed journey time)
 drop view if exists public.v_global_ranks_ordered;
 create view public.v_global_ranks_ordered
 with (security_invoker = true)
@@ -221,15 +222,13 @@ select
     else 2  -- Inactive users (tier 2)
   end as priority_tier,
   -- Calculate effective time for sorting within same tier
+  -- Uses time_sec directly (sum of best times for completed stages)
   case
     when le.time_sec is not null then 
-      -- Completed: use actual time_sec
+      -- Use actual time_sec (sum of best times for completed stages)
       le.time_sec
-    when le.journey_started_at is not null and le.journey_completed_at is null then
-      -- In progress: calculate elapsed time
-      extract(epoch from (now() - le.journey_started_at))::integer
     else
-      -- Not started: use very large number
+      -- Not started or no time recorded: use very large number
       2147483647
   end as effective_time_sec
 from public.profiles p
